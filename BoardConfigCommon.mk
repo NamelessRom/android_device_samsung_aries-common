@@ -19,6 +19,8 @@
 
 # Set this up here so that BoardVendorConfig.mk can override it
 BOARD_USES_GENERIC_AUDIO := false
+AUDIO_FEATURE_ENABLED_INCALL_MUSIC := false
+AUDIO_FEATURE_ENABLED_COMPRESS_VOIP := false
 
 BOARD_USES_LIBSECRIL_STUB := true
 
@@ -28,6 +30,17 @@ TARGET_CPU_ABI2 := armeabi
 TARGET_ARCH_VARIANT := armv7-a-neon
 TARGET_ARCH_VARIANT_CPU := cortex-a8
 TARGET_CPU_VARIANT := cortex-a8
+TARGET_CPU_SMP := false
+TARGET_KERNEL_CUSTOM_TOOLCHAIN := arm-eabi-4.7
+
+# Bionic stuff
+TARGET_NEEDS_BIONIC_MD5 := true
+TARGET_NEEDS_BIONIC_PRELINK_SUPPORT := true
+TARGET_ENABLE_NON_PIE_SUPPORT := true
+MALLOC_IMPL := dlmalloc
+
+# RIL
+BOARD_RIL_CLASS := ../../../hardware/samsung/exynos3/s5pc110/ril/
 
 # Dalvik startup with low memory footprint
 TARGET_ARCH_LOWMEM := true
@@ -69,11 +82,12 @@ BOARD_KERNEL_PAGESIZE := 4096
 BOARD_KERNEL_CMDLINE := console=ttyFIQ0,115200 init=/init no_console_suspend
 
 BOARD_BOOTIMAGE_PARTITION_SIZE := 7864320
-BOARD_SYSTEMIMAGE_PARTITION_SIZE := 419430400
-BOARD_USERDATAIMAGE_PARTITION_SIZE := 2013265920
+BOARD_SYSTEMIMAGE_PARTITION_SIZE := 629145600
+BOARD_USERDATAIMAGE_PARTITION_SIZE := 1379926016
 BOARD_FLASH_BLOCK_SIZE := 4096
 
 # Connectivity - Wi-Fi
+BOARD_NO_WIFI_HAL           := true
 BOARD_WPA_SUPPLICANT_DRIVER := NL80211
 WPA_SUPPLICANT_VERSION      := VER_0_8_X
 BOARD_WPA_SUPPLICANT_PRIVATE_LIB := lib_driver_cmd_bcmdhd
@@ -95,23 +109,30 @@ TARGET_USE_CUSTOM_LUN_FILE_PATH := "/sys/devices/platform/s3c-usbgadget/gadget/l
 
 # Recovery
 TARGET_USERIMAGES_USE_EXT4 := true
+TARGET_USERIMAGES_USE_F2FS := true
 BOARD_HAS_NO_SELECT_BUTTON := true
-BOARD_CUSTOM_GRAPHICS := ../../../device/samsung/aries-common/recovery/graphics.c
 BOARD_USES_BML_OVER_MTD := true
 BOARD_CUSTOM_BOOTIMG_MK := device/samsung/aries-common/shbootimg.mk
 TARGET_RECOVERY_FSTAB := device/samsung/aries-common/fstab.aries
 RECOVERY_FSTAB_VERSION := 2
 
-# Boot Animation
-TARGET_BOOTANIMATION_PRELOAD := true
-TARGET_BOOTANIMATION_TEXTURE_CACHE := true
-TARGET_BOOTANIMATION_USE_RGB565 := true
+# Open Source Charging Mode
+BOARD_POWER_SUPPLY_PATH := /sys/class/power_supply
+BOARD_BATTERY_SYSFS_PATH := $(BOARD_POWER_SUPPLY_PATH)/battery
+BOARD_AC_SYSFS_PATH := $(BOARD_POWER_SUPPLY_PATH)/ac
+BOARD_USB_SYSFS_PATH := $(BOARD_POWER_SUPPLY_PATH)/usb
+BOARD_CHARGER_ENABLE_SUSPEND := true
+BOARD_CHARGER_DIM_SCREEN_BRIGHTNESS := true
+BOARD_CUSTOM_GRAPHICS := ../../../device/samsung/aries-common/recovery/graphics.c
 
-# SkTextBox for libtvout
-BOARD_USES_SKTEXTBOX := true
+# Boot Animation
+TARGET_BOOTANIMATION_TEXTURE_CACHE := false
+TARGET_BOOTANIMATION_USE_RGB565 := true
 
 # Hardware rendering
 USE_OPENGL_RENDERER := true
+
+BOARD_EGL_CFG := device/samsung/aries-common/egl.cfg
 
 # TARGET_DISABLE_TRIPLE_BUFFERING can be used to disable triple buffering
 # on per target basis. On crespo it is possible to do so in theory
@@ -127,12 +148,6 @@ TARGET_RUNNING_WITHOUT_SYNC_FRAMEWORK := true
 # hwcomposer: custom vsync ioctl
 BOARD_CUSTOM_VSYNC_IOCTL := true
 
-# Suspend in charger to disable capacitive keys
-BOARD_CHARGER_ENABLE_SUSPEND := true
-
-# Required for TV out
-COMMON_GLOBAL_CFLAGS += -DNEEDS_VECTORIMPL_SYMBOLS
-
 # Screenrecord
 BOARD_SCREENRECORD_LANDSCAPE_ONLY := true
 
@@ -140,19 +155,32 @@ BOARD_SCREENRECORD_LANDSCAPE_ONLY := true
 BOARD_SEPOLICY_DIRS += \
     device/samsung/aries-common/sepolicy
 
-BOARD_SEPOLICY_UNION += \
-    bdaddr_read.te \
-    file_contexts \
-    geomagneticd.te \
-    orientationd.te \
-    property_contexts \
-    pvrsrvinit.te \
-    rild.te \
-    tvouthack.te \
-    tvoutserver.te \
+BOARD_SEPOLICY_REPLACE += \
+    domain.te \
+    app.te
 
 # Hardware tunables
 BOARD_HARDWARE_CLASS := device/samsung/aries-common/cmhw/
 
 # Include aries specific stuff
 -include device/samsung/aries-common/Android.mk
+
+# Recovery
+RECOVERY_VARIANT := twrp
+
+# TWRP Flags
+DEVICE_RESOLUTION := 480x800
+TW_NO_REBOOT_BOOTLOADER := true
+TW_INTERNAL_STORAGE_PATH := "/sdcard"
+TW_INTERNAL_STORAGE_MOUNT_POINT := "sdcard"
+TW_EXTERNAL_STORAGE_PATH := "/external_sd"
+TW_EXTERNAL_STORAGE_MOUNT_POINT := "external_sd"
+TW_FLASH_FROM_STORAGE := true
+TW_EXCLUDE_SUPERSU := true
+TW_NO_PARTITION_SD_CARD := true
+TW_INCLUDE_FB2PNG := true
+TW_INCLUDE_JB_CRYPTO := false
+TW_EXCLUDE_ENCRYPTED_BACKUPS := true
+TW_INCLUDE_L_CRYPTO := true
+TW_MAX_BRIGHTNESS := 255
+TW_BRIGHTNESS_PATH := "/sys/class/backlight/s5p_bl/brightness"

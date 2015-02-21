@@ -28,8 +28,7 @@
 #include <linux/kd.h>
 
 #include <pixelflinger/pixelflinger.h>
-
-#include "roboto_10x18.h"
+#include "font_10x18.h"
 
 #include "minui.h"
 
@@ -44,13 +43,13 @@ static GRFont *gr_font = 0;
 static GGLContext *gr_context = 0;
 static GGLSurface gr_font_texture;
 static GGLSurface gr_framebuffer[2];
-static GGLSurface gr_mem_surface;
+GGLSurface gr_mem_surface;
 static unsigned gr_active_fb = 0;
 
 static int gr_fb_fd = -1;
 static int gr_vt_fd = -1;
 
-static struct fb_var_screeninfo vi;
+struct fb_var_screeninfo vi;
 
 static int get_framebuffer(GGLSurface *fb)
 {
@@ -162,7 +161,7 @@ void gr_font_size(int *x, int *y)
     *y = gr_font->cheight;
 }
 
-int gr_text(int x, int y, const char *s, int bold)
+int gr_text(int x, int y, const char *s, ...)
 {
     GGLContext *gl = gr_context;
     GRFont *font = gr_font;
@@ -328,3 +327,9 @@ void gr_fb_blank(bool blank)
     if (ret < 0)
         perror("ioctl(): blank");
 }
+
+void gr_clear()
+{
+    gr_fb_blank(true);
+}
+

@@ -1,296 +1,399 @@
 #!/tmp/busybox sh
 #
+# Copyright (C) 2008 The Android Open-Source Project
+# Copyright (C) 2011 by Teamhacksung
+# Copyright (C) 2013 OmniROM Project
+#
+# Modified by Humberto Borba <humberos@gmail.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # Universal Updater Script for Samsung Galaxy S Phones
-# (c) 2011 by Teamhacksung
 # Combined GSM & CDMA version
 #
 
-SYSTEM_SIZE='629145600' # 600M
+set -x
+export PATH=/:/sbin:/system/xbin:/system/bin:/tmp:${PATH}
 
+# 600MB
+SYSTEM_SIZE='629145600';
+# 256MB
+SWAP_SIZE='268435456';
+
+# write logs to /tmp
+set_log() {
+    /tmp/busybox mkdir -p /tmp/omni;
+    /tmp/busybox rm -rf /tmp/omni/"${1}";
+    exec >> /tmp/omni/"${1}" 2>&1;
+}
+
+# restore logs from /tmp
+restore_log() {
+    local omni_log_path="${2}"/omni/log;
+    if /tmp/busybox test -e /tmp/omni/"${1}" ; then
+        mkdir -p "${omni_log_path}";
+        /tmp/busybox cp /tmp/omni/"${1}" "${omni_log_path}"/"${1}";
+    fi
+}
+
+# ui_print
+OUTFD=$(\
+    /tmp/busybox ps | \
+    /tmp/busybox grep -v "grep" | \
+    /tmp/busybox grep -o -E "/tmp/updater .*" | \
+    /tmp/busybox cut -d " " -f 3\
+);
+
+if /tmp/busybox test -e /tmp/update_binary ; then
+    OUTFD=$(\
+        /tmp/busybox ps | \
+        /tmp/busybox grep -v "grep" | \
+        /tmp/busybox grep -o -E "update_binary(.*)" | \
+        /tmp/busybox cut -d " " -f 3\
+    );
+fi
+
+ui_print() {
+    if [ "${OUTFD}" != "" ]; then
+        echo "ui_print ${1} " 1>&"${OUTFD}";
+        echo "ui_print " 1>&"${OUTFD}";
+    else
+        echo "${1}";
+    fi
+}
+
+# Check if we're in CDMA or GSM mode
+if /tmp/busybox test "${1}" = cdma ; then
+    # CDMA mode
+    IS_GSM='/tmp/busybox false';
+    SD_PART='/dev/block/mmcblk1p1';
+    MMC_PART1='/dev/block/mmcblk0p1';
+    MMC_PART2='/dev/block/mmcblk0p2';
+    MTD_SIZE='490733568';
+else
+    # GSM mode
+    IS_GSM='/tmp/busybox true';
+    SD_PART='/dev/block/mmcblk0p1';
+    MMC_PART1='/dev/block/mmcblk0p1';
+    MMC_PART2='/dev/block/mmcblk0p2';
+    EFS_PART="$(/tmp/busybox grep efs /proc/mtd | /tmp/busybox awk '{print $1}' | /tmp/busybox sed 's/://g' | /tmp/busybox sed 's/mtd/mtdblock/g')";
+    RADIO_PART="$(/tmp/busybox grep radio /proc/mtd | /tmp/busybox awk '{print $1}' | /tmp/busybox sed 's/://g' | /tmp/busybox sed 's/mtd/mtdblock/g')";
+    MTD_SIZE='442499072';
+fi
+
+# fix package name
+fix_package_location() {
+    local PACKAGE_LOCATION=${1};
+    # Remove leading /mnt for Samsung recovery
+    PACKAGE_LOCATION=${PACKAGE_LOCATION#/mnt};
+    # Convert to modern sdcard path
+    PACKAGE_LOCATION=$(echo "${PACKAGE_LOCATION}" | /tmp/busybox sed -e "s|^/sdcard/||");
+    PACKAGE_LOCATION=$(echo "${PACKAGE_LOCATION}" | /tmp/busybox sed -e "s|^/emmc/||");
+    PACKAGE_LOCATION=$(echo "${PACKAGE_LOCATION}" | /tmp/busybox sed -e "s|^/external_sd/||");
+    PACKAGE_LOCATION=$(echo "${PACKAGE_LOCATION}" | /tmp/busybox sed -e "s|^/storage/sdcard0/||");
+    PACKAGE_LOCATION=$(echo "${PACKAGE_LOCATION}" | /tmp/busybox sed -e "s|^/storage/sdcard1/||");
+    echo "${PACKAGE_LOCATION}";
+}
+
+# check for update package name
+if ! /tmp/busybox test -n "${UPDATE_PACKAGE}" ; then
+    # scrape last install package reference from /tmp/recovery.log
+    UPDATE_PACKAGE=$(\
+        /tmp/busybox cat /tmp/recovery.log | \
+        /tmp/busybox grep Installing | \
+        /tmp/busybox head -n1\
+    );
+    UPDATE_PACKAGE=$(\
+        echo "$UPDATE_PACKAGE" | \
+        /tmp/busybox sed s/Installing\ \'//g | \
+        /tmp/busybox sed s/\'\.\.\.//g\
+    );
+fi
+
+UPDATE_PACKAGE=$(fix_package_location "${UPDATE_PACKAGE}");
+ui_print "Package:${UPDATE_PACKAGE}"
+
+# check mounts
 check_mount() {
-    local MOUNT_POINT=`/tmp/busybox readlink $1`
-    if ! /tmp/busybox test -n "$MOUNT_POINT" ; then
+    local MOUNT_POINT=$(/tmp/busybox readlink "${1}");
+    if ! /tmp/busybox test -n "${MOUNT_POINT}" ; then
         # readlink does not work on older recoveries for some reason
         # doesn't matter since the path is already correct in that case
-        /tmp/busybox echo "Using non-readlink mount point $1"
-        MOUNT_POINT=$1
+        echo "Using non-readlink mount point ${1}";
+        MOUNT_POINT="${1}";
     fi
-    if ! /tmp/busybox grep -q $MOUNT_POINT /proc/mounts ; then
-        /tmp/busybox mkdir -p $MOUNT_POINT
-        /tmp/busybox umount -l $2
-        if ! /tmp/busybox mount -t $3 $2 $MOUNT_POINT ; then
-            /tmp/busybox echo "Cannot mount $1 ($MOUNT_POINT)."
-            exit 1
+    if ! /tmp/busybox grep -q "${MOUNT_POINT}" /proc/mounts ; then
+        /tmp/busybox mkdir -p "${MOUNT_POINT}";
+        /tmp/busybox umount -l "${2}";
+        if ! /tmp/busybox mount -t "${3}" "${2}" "${MOUNT_POINT}" ; then
+            echo "Cannot mount ${1} (${MOUNT_POINT}).";
+            exit 1;
         fi
     fi
 }
 
-set_log() {
-    rm -rf $1
-    exec >> $1 2>&1
-}
-
+# warning repartitions
 warn_repartition() {
-    if ! /tmp/busybox test -e /.accept_wipe ; then
-        /tmp/busybox touch /.accept_wipe
-        ui_print
-        ui_print "============================================"
-        ui_print "This ROM uses an incompatible partition layout"
-        ui_print "Your /data will be wiped upon installation"
-        ui_print "Run this update.zip again to confirm install"
-        ui_print "============================================"
-        ui_print
+    if ! /tmp/busybox test -e /tmp/.accept_wipe ; then
+        /tmp/busybox touch /tmp/.accept_wipe;
+        ui_print ""
+        ui_print "========================================"
+        ui_print "ATTENTION"
+        ui_print ""
+        ui_print "This VERSION uses an incompatible"
+        ui_print "partition layout"
+        ui_print "Your /data will be wiped completely"
+        ui_print "So, make your backups then just"
+        ui_print "run this update.zip"
+        ui_print "again to confirm install"
+        ui_print ""
+        ui_print "ATTENTION"
+        ui_print "========================================"
+        ui_print ""
         exit 9
     fi
-    /tmp/busybox rm /.accept_wipe
+    /tmp/busybox rm -fr /tmp/.accept_wipe;
 }
 
+# format partitions
 format_partitions() {
-    /lvm/sbin/lvm lvcreate -L ${SYSTEM_SIZE}B -n system lvpool
-    /lvm/sbin/lvm lvcreate -l 100%FREE -n userdata lvpool
+    # create lvm partitions
+    /lvm/sbin/lvm lvcreate -L ${SYSTEM_SIZE}B -n system lvpool;
+    /lvm/sbin/lvm lvcreate -L ${SWAP_SIZE}B -n swap lvpool;
+    /lvm/sbin/lvm lvcreate -l 100%FREE -n userdata lvpool;
 
-    # format data (/system will be formatted by updater-script)
-    /tmp/make_ext4fs -b 4096 -g 32768 -i 8192 -I 256 -l -16384 -a /data /dev/lvpool/userdata
-
-    # unmount and format datadata
+    # format partitions
+    /tmp/make_ext4fs -b 4096 -g 32768 -i 7680 -I 256 -a /system /dev/lvpool/system;
+    /tmp/make_ext4fs -b 4096 -g 32768 -i 8192 -I 256 -a /data /dev/lvpool/userdata;
     /tmp/busybox umount -l /datadata
     /tmp/erase_image datadata
 }
 
-fix_package_location() {
-    local PACKAGE_LOCATION=$1
-    # Remove leading /mnt for Samsung recovery
-    PACKAGE_LOCATION=${PACKAGE_LOCATION#/mnt}
-    # Convert to modern sdcard path
-    PACKAGE_LOCATION=`echo $PACKAGE_LOCATION | /tmp/busybox sed -e "s|^/sdcard|/storage/sdcard0|"`
-    PACKAGE_LOCATION=`echo $PACKAGE_LOCATION | /tmp/busybox sed -e "s|^/emmc|/storage/sdcard1|"`
-    echo $PACKAGE_LOCATION
+# setup lvm partitions
+setup_lvm_partitions() {
+    # umount
+    /tmp/busybox umount -l /system;
+    /tmp/busybox umount -l /data;
+    /tmp/busybox umount -f -l ${MMC_PART2};
+
+    # remove any lvm reference
+    /lvm/sbin/lvm lvremove -f lvpool;
+    /lvm/sbin/lvm vgremove -f lvpool;
+    /lvm/sbin/lvm pvremove -ffy ${MMC_PART2};
+
+    # force clean up
+    dd if=/dev/zero of=${MMC_PART2} bs=512 count=1;
+
+    # create lvm phisical volumes and lvpool group
+    /lvm/sbin/lvm pvcreate ${MMC_PART2};
+    /lvm/sbin/lvm vgcreate lvpool ${MMC_PART2};
 }
 
-# ui_print by Chainfire
-OUTFD=$(/tmp/busybox ps | /tmp/busybox grep -v "grep" | /tmp/busybox grep -o -E "update_binary(.*)" | /tmp/busybox cut -d " " -f 3);
-ui_print() {
-  if [ $OUTFD != "" ]; then
-    echo "ui_print ${1} " 1>&$OUTFD;
-    echo "ui_print " 1>&$OUTFD;
-  else
-    echo "${1}";
-  fi;
-}
-
-set -x
-export PATH=/:/sbin:/system/xbin:/system/bin:/tmp:$PATH
-
-# Check if we're in CDMA or GSM mode
-if /tmp/busybox test "$1" = cdma ; then
-    # CDMA mode
-    IS_GSM='/tmp/busybox false'
-    SD_PART='/dev/block/mmcblk1p1'
-    MMC_PART='/dev/block/mmcblk0p1 /dev/block/mmcblk0p2'
-    MTD_SIZE='490733568'
-else
-    # GSM mode
-    IS_GSM='/tmp/busybox true'
-    SD_PART='/dev/block/mmcblk0p1'
-    MMC_PART='/dev/block/mmcblk0p2'
-    MTD_SIZE='442499072'
-fi
-
-# check for old/non-cwm recovery.
-if ! /tmp/busybox test -n "$UPDATE_PACKAGE" ; then
-    # scrape package location from /tmp/recovery.log
-    UPDATE_PACKAGE=`/tmp/busybox cat /tmp/recovery.log | /tmp/busybox grep 'Update location:' | /tmp/busybox tail -n 1 | /tmp/busybox cut -d ' ' -f 3-`
-fi
-
-# check if we're running on a bml, mtd (old) or mtd (current) device
-if /tmp/busybox test -e /dev/block/bml7 ; then
-    # we're running on a bml device
-
-    # make sure sdcard is mounted
-    check_mount /mnt/sdcard $SD_PART vfat
-
-    # everything is logged into /mnt/sdcard/cyanogenmod_bml.log
-    set_log /mnt/sdcard/cyanogenmod_bml.log
-
-    if $IS_GSM ; then
+# backup /efs partition
+backup_efs() {
+    if ${IS_GSM} ; then
         # make sure efs is mounted
-        check_mount /efs /dev/block/stl3 rfs
+        check_mount /efs "${1}" "${2}";
 
         # create a backup of efs
-        if /tmp/busybox test -e /mnt/sdcard/backup/efs ; then
-            /tmp/busybox mv /mnt/sdcard/backup/efs /mnt/sdcard/backup/efs-$$
+        if /tmp/busybox test -e "${3}"/omni/backup/efs ; then
+            /tmp/busybox mv "${3}"/omni/backup/efs "${3}"/omni/backup/efs-$$;
         fi
-        /tmp/busybox rm -rf /mnt/sdcard/backup/efs
+        /tmp/busybox rm -rf "${3}"/omni/backup/efs;
 
-        /tmp/busybox mkdir -p /mnt/sdcard/backup/efs
-        /tmp/busybox cp -R /efs/ /mnt/sdcard/backup
+        /tmp/busybox mkdir -p "${3}"/omni/backup/efs;
+        /tmp/busybox cp -R /efs/ "${3}"/omni/backup;
     fi
+}
 
-    # write the package path to sdcard cyanogenmod.cfg
-    if /tmp/busybox test -n "$UPDATE_PACKAGE" ; then
-        /tmp/busybox echo `fix_package_location $UPDATE_PACKAGE` > /mnt/sdcard/cyanogenmod.cfg
+# restore /efs partition
+restore_efs() {
+    if ${IS_GSM} ; then
+        if /tmp/busybox test -e /sdcard/omni/backup/efs/nv_data.bin ; then
+            /tmp/busybox umount -l /efs;
+            /tmp/erase_image efs;
+            /tmp/busybox mkdir -p /efs;
+
+            if ! /tmp/busybox grep -q /efs /proc/mounts ; then
+                if ! /tmp/busybox mount -t yaffs2 /dev/block/"${EFS_PART}" /efs ; then
+                    echo "Cannot mount efs.";
+                    exit 6;
+                fi
+            fi
+
+            /tmp/busybox cp -R /sdcard/omni/backup/efs /;
+            /tmp/busybox umount -l /efs;
+        else
+            echo "nv_data.bin not found";
+        fi
     fi
+}
 
-    # Scorch any ROM Manager settings to require the user to reflash recovery
-    /tmp/busybox rm -f /mnt/sdcard/clockworkmod/.settings
+# restore /modem partition
+restore_modem() {
+    if ${IS_GSM} ; then
+        # create mountpoint for radio partition
+        /tmp/busybox mkdir -p /radio;
+
+        # make sure radio partition is mounted
+        if ! /tmp/busybox grep -q /radio /proc/mounts ; then
+            /tmp/busybox umount -l /dev/block/"${RADIO_PART}";
+            if ! /tmp/busybox mount -t yaffs2 /dev/block/"${RADIO_PART}" /radio ; then
+                echo "Cannot mount radio partition.";
+                exit 5;
+            fi
+        fi
+        # if modem.bin doesn't exist on radio partition, format the partition and copy it
+        if ! /tmp/busybox test -e /radio/modem.bin ; then
+            /tmp/busybox umount -l /dev/block/"${RADIO_PART}";
+            /tmp/erase_image radio;
+            if ! /tmp/busybox mount -t yaffs2 /dev/block/"${RADIO_PART}" /radio ; then
+                echo "Cannot copy modem.bin to radio partition.";
+                exit 5;
+            else
+                /tmp/busybox cp /tmp/modem.bin /radio/modem.bin;
+            fi
+        fi
+        # unmount radio partition
+        /tmp/busybox umount -l /radio;
+    fi
+}
+
+if /tmp/busybox test -e /dev/block/bml7 ; then
+################################################################################
+################################################################################
+# Install process from stock
+# check if we're running on a bml
+
+    # we're running on a bml device
+    # everything is logged into /tmp/omni/bml.log
+    set_log bml.log;
+
+    # send a warning to user
+    warn_repartition;
+
+    # make sure sdcard is mounted
+    check_mount /mnt/sdcard "${SD_PART}" vfat;
+
+    # backup efs
+    backup_efs /dev/block/stl3 rfs /mnt/sdcard;
+
+    # write the package path to sdcard omni.cfg
+    echo "${UPDATE_PACKAGE}" > /mnt/sdcard/omni.cfg;
 
     # write new kernel to boot partition
-    /tmp/flash_image boot /tmp/boot.img
+    /tmp/flash_image boot /tmp/boot.img;
     if [ "$?" != "0" ] ; then
-        exit 3
+        exit 3;
     fi
-    /tmp/busybox sync
 
-    /sbin/reboot now
-    exit 0
+    restore_log bml.log /mnt/sdcard;
+    /tmp/busybox sync;
+    /sbin/reboot now;
+    exit 0;
 
-elif /tmp/busybox test `/tmp/busybox cat /sys/class/mtd/mtd2/size` != "$MTD_SIZE" || \
-    /tmp/busybox test `/tmp/busybox cat /sys/class/mtd/mtd2/name` != "datadata" ; then
-    # we're running on a mtd (old) device
+elif [ "$(/tmp/busybox cat /sys/class/mtd/mtd2/size)" != "${MTD_SIZE}" ] || \
+     [ "$(/tmp/busybox cat /sys/class/mtd/mtd2/name)" != "datadata" ] ; then
+################################################################################
+################################################################################
+# Install process
+# we're running on a mtd (old) device
+
+    # everything is logged /tmp/omni_mtd_old.log
+    set_log mtd_old.log;
+
+    # send a warning to user
+    warn_repartition;
 
     # make sure sdcard is mounted
     check_mount /sdcard $SD_PART vfat
 
-    # everything is logged into /sdcard/cyanogenmod_mtd_old.log
-    set_log /sdcard/cyanogenmod_mtd_old.log
-
-    warn_repartition
-
-    # write the package path to sdcard cyanogenmod.cfg
-    if /tmp/busybox test -n "$UPDATE_PACKAGE" ; then
-        /tmp/busybox echo `fix_package_location $UPDATE_PACKAGE` > /sdcard/cyanogenmod.cfg
-    fi
-
-    # inform the script that this is an old mtd upgrade
-    /tmp/busybox echo 1 > /sdcard/cyanogenmod.mtdupd
+    # write the package path to sdcard omni.cfg
+    echo "${UPDATE_PACKAGE}" > /sdcard/omni.cfg;
 
     # clear datadata
     /tmp/busybox umount -l /datadata
     /tmp/erase_image datadata
 
+    # backup efs
+    backup_efs /dev/block/"${EFS_PART}" yaffs2 /sdcard;
+
     # write new kernel to boot partition
-    /tmp/bml_over_mtd.sh boot 72 reservoir 2004 /tmp/boot.img
+    /tmp/bml_over_mtd.sh boot 72 reservoir 2004 /tmp/boot.img;
 
-	# Remove /system/build.prop to trigger emergency boot
-	/tmp/busybox mount /system
-	/tmp/busybox rm -f /system/build.prop
-	/tmp/busybox umount -l /system
-
-    /tmp/busybox sync
-
-    /sbin/reboot now
+    # restore logs and reboot
+    restore_log bml_over_mtd.log /sdcard;
+    restore_log mtd_old.log /sdcard;
+    /tmp/busybox sync;
+    /sbin/reboot now;
     exit 0
 
 elif /tmp/busybox test -e /dev/block/mtdblock0 ; then
-    # we're running on a mtd (current) device
+################################################################################
+################################################################################
+# Install process
+# we're running on a mtd (current) device
 
-    # make sure sdcard is mounted
-    check_mount /sdcard $SD_PART vfat
+    # everything is logged into /tmp/omni/mtd.log
+    set_log mtd.log;
 
-    # everything is logged into /sdcard/cyanogenmod.log
-    set_log /sdcard/cyanogenmod_mtd.log
+    # restore modem.bin
+    restore_modem;
 
-    # unmount system and data (recovery seems to expect system to be unmounted)
-    /tmp/busybox umount -l /system
-    /tmp/busybox umount -l /data
-
-    # Resize partitions
-    # (For first install, this will get skipped because device doesn't exist)
-    if /tmp/busybox test `/tmp/busybox blockdev --getsize64 /dev/mapper/lvpool-system` -lt $SYSTEM_SIZE ; then
-        warn_repartition
-        /lvm/sbin/lvm lvremove -f lvpool
-        format_partitions
+    # check lvm resize
+    if /tmp/busybox test -e /dev/lvpool/system ; then
+        if [ "$(/tmp/busybox blockdev --getsize64 /dev/mapper/lvpool-system)" != "${SYSTEM_SIZE}" ] || \
+           [ "$(/tmp/busybox blockdev --getsize64 /dev/mapper/lvpool-swap)" != "${SWAP_SIZE}" ] ; then
+            warn_repartition;
+            setup_lvm_partitions;
+            format_partitions;
+        fi
     fi
 
-    if $IS_GSM ; then
-        # create mountpoint for radio partition
-        /tmp/busybox mkdir -p /radio
+    # check sdcard
+    check_mount /mnt/sdcard "${SD_PART}" vfat;
 
-        # make sure radio partition is mounted
-        if ! /tmp/busybox grep -q /radio /proc/mounts ; then
-            /tmp/busybox umount -l /dev/block/mtdblock5
-            if ! /tmp/busybox mount -t yaffs2 /dev/block/mtdblock5 /radio ; then
-                /tmp/busybox echo "Cannot mount radio partition."
-                exit 5
-            fi
-        fi
+    if ! /tmp/busybox test -e /sdcard/omni.cfg ; then
+        # unmount system and data (recovery seems to expect system to be unmounted)
+        /tmp/busybox umount -l /system;
+        /tmp/busybox umount -l /data;
 
-        # if modem.bin doesn't exist on radio partition, format the partition and copy it
-        if ! /tmp/busybox test -e /radio/modem.bin ; then
-            /tmp/busybox umount -l /dev/block/mtdblock5
-            /tmp/erase_image radio
-            if ! /tmp/busybox mount -t yaffs2 /dev/block/mtdblock5 /radio ; then
-                /tmp/busybox echo "Cannot copy modem.bin to radio partition."
-                exit 5
-            else
-                /tmp/busybox cp /tmp/modem.bin /radio/modem.bin
-            fi
-        fi
-
-        # unmount radio partition
-        /tmp/busybox umount -l /dev/block/mtdblock5
-    fi
-
-    if ! /tmp/busybox test -e /sdcard/cyanogenmod.cfg ; then
         # update install - flash boot image then skip back to updater-script
         # (boot image is already flashed for first time install or old mtd upgrade)
-
         # flash boot image
-        /tmp/bml_over_mtd.sh boot 72 reservoir 2004 /tmp/boot.img
+        /tmp/bml_over_mtd.sh boot 72 reservoir 2004 /tmp/boot.img;
 
-        if ! $IS_GSM ; then
-            /tmp/bml_over_mtd.sh recovery 102 reservoir 2004 /tmp/recovery_kernel
+        if ! ${IS_GSM} ; then
+            /tmp/bml_over_mtd.sh recovery 102 reservoir 2004 /tmp/recovery_kernel;
         fi
 
-        exit 0
+        restore_log bml_over_mtd.log /sdcard;
+        restore_log mtd.log /sdcard;
+        exit 0;
     fi
 
-    # if a cyanogenmod.cfg exists, then this is a first time install
-    # let's format the volumes and restore radio and efs
+    # prevent loops
+    /tmp/busybox rm -fr /sdcard/omni.cfg;
 
-    # remove the cyanogenmod.cfg to prevent this from looping
-    /tmp/busybox rm -f /sdcard/cyanogenmod.cfg
+    # efs
+    restore_efs;
 
-    # setup lvm volumes
-    /lvm/sbin/lvm pvcreate $MMC_PART
-    /lvm/sbin/lvm vgcreate lvpool $MMC_PART
-    format_partitions
+    # lvm setup
+    setup_lvm_partitions;
+    format_partitions;
 
     # restart into recovery so the user can install further packages before booting
-    /tmp/busybox touch /cache/.startrecovery
-
-    if /tmp/busybox test -e /sdcard/cyanogenmod.mtdupd ; then
-        # this is an upgrade with changed MTD mapping for /data, /cache, /system
-        # so return to updater-script after formatting them
-
-        /tmp/busybox rm -f /sdcard/cyanogenmod.mtdupd
-
-        exit 0
-    fi
-
-    if $IS_GSM ; then
-        # restore efs backup
-        if /tmp/busybox test -e /sdcard/backup/efs/nv_data.bin || \
-                /tmp/busybox test -e /sdcard/backup/efs/root/afs/settings/nv_data.bin ; then
-            /tmp/busybox umount -l /efs
-            /tmp/erase_image efs
-            /tmp/busybox mkdir -p /efs
-
-            if ! /tmp/busybox grep -q /efs /proc/mounts ; then
-                if ! /tmp/busybox mount -t yaffs2 /dev/block/mtdblock4 /efs ; then
-                    /tmp/busybox echo "Cannot mount efs."
-                    exit 6
-                fi
-            fi
-
-            /tmp/busybox cp -R /sdcard/backup/efs /
-            /tmp/busybox umount -l /efs
-        else
-            /tmp/busybox echo "Cannot restore efs."
-            exit 7
-        fi
-    fi
-
-    exit 0
+    /tmp/busybox touch /cache/.startrecovery;
+    restore_log mtd.log /sdcard;
+    exit 0;
 fi
-
